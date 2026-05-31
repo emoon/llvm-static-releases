@@ -1,6 +1,7 @@
 name: build-llvm
 
-# Runs scripts/build_llvm.sh on workflow_dispatch, tars the install prefix,
+# On workflow_dispatch, builds minimal static LLVM per OS — scripts/build_llvm.sh
+# on Linux, scripts/build_llvm.ps1 (MSVC) on Windows — tars each install prefix,
 # and publishes (or extends) a GitHub Release tagged with the LLVM version.
 # Prebuilts are produced once per (LLVM version, triple) and then idle until
 # the next bump.
@@ -102,3 +103,86 @@ jobs:
               --title "LLVM ${LLVM_VERSION}" \
               --notes-file "${NOTES_FILE}"
           fi
+
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      # Put MSVC (cl.exe) + the Windows SDK on PATH for every later step.
+      # build_llvm.ps1 expects a Developer PowerShell environment.
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # cmake, ninja, and tar (bsdtar, with xz support) are preinstalled on
+      # the windows-latest runner image; cl.exe comes from the step above.
+
+      # build_llvm.ps1 uses its own pinned constant; the tar step names the
+      # artifact after the input. Verify they agree up front so a mismatched
+      # dispatch fails in seconds, not after ~30 min of building the wrong
+      # version (mirrors the Linux job's build_llvm.sh check).
+      - name: Verify llvm_version matches script
+        env:
+          LLVM_VERSION: ${{ inputs.llvm_version }}
+        run: |
+          $content = Get-Content -Raw scripts/build_llvm.ps1
+          if ($content -notmatch "(?m)^\`$LLVM_VERSION\s*=\s*'(.+?)'") {
+            Write-Host "::error::could not find the LLVM_VERSION pin in scripts/build_llvm.ps1"
+            exit 1
+          }
+          $scriptVersion = $Matches[1]
+          if ($scriptVersion -ne $env:LLVM_VERSION) {
+            Write-Host "::error::llvm_version input '$($env:LLVM_VERSION)' does not match scripts/build_llvm.ps1 pin '$scriptVersion'. Bump the script first, then dispatch with the matching version."
+            exit 1
+          }
+
+      - name: Build static LLVM
+        run: scripts/build_llvm.ps1
+
+      - name: Tar install prefix
+        id: tar
+        env:
+          LLVM_VERSION: ${{ inputs.llvm_version }}
+        run: |
+          $tarball = "llvm-$($env:LLVM_VERSION)-x86_64-pc-windows-msvc.tar.xz"
+          $base = Join-Path $env:LOCALAPPDATA 'llvm-static-releases'
+          tar -C $base -cJf $tarball "llvm-$($env:LLVM_VERSION)"
+          if ($LASTEXITCODE -ne 0) { throw "tar failed (exit $LASTEXITCODE)" }
+          $sha = (Get-FileHash -Algorithm SHA256 $tarball).Hash.ToLower()
+          "tarball=$tarball" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "sha256=$sha"      | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Get-Item $tarball | Format-List Name, Length
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          LLVM_VERSION: ${{ inputs.llvm_version }}
+          TARBALL: ${{ steps.tar.outputs.tarball }}
+          SHA256: ${{ steps.tar.outputs.sha256 }}
+        run: |
+          # Native exit codes drive the create-vs-upload choice; don't let a
+          # non-zero `gh release view` (release absent) abort the step.
+          $ErrorActionPreference = 'Continue'
+          gh release view $env:LLVM_VERSION *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "release $($env:LLVM_VERSION) already exists; uploading asset"
+            gh release upload $env:LLVM_VERSION $env:TARBALL --clobber
+          } else {
+            $notes = @"
+          Static LLVM $($env:LLVM_VERSION), built from llvm-project source with the CMake flag set in ``scripts/build_llvm.ps1``. Minimal: X86 + AArch64 only, no clang / lldb / lld, static archives, assertions off.
+
+          ## Assets
+
+          | Triple | Asset | SHA256 |
+          |---|---|---|
+          | ``x86_64-pc-windows-msvc`` | ``$($env:TARBALL)`` | ``$($env:SHA256)`` |
+          "@
+            $notesFile = New-TemporaryFile
+            $notes | Out-File -FilePath $notesFile -Encoding utf8
+            gh release create $env:LLVM_VERSION $env:TARBALL --title "LLVM $($env:LLVM_VERSION)" --notes-file $notesFile
+          }
+          if ($LASTEXITCODE -ne 0) { throw "gh release publish failed (exit $LASTEXITCODE)" }
