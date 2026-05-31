@@ -1,8 +1,9 @@
 name: build-llvm
 
 # On workflow_dispatch, builds minimal static LLVM per OS — scripts/build_llvm.sh
-# on Linux, scripts/build_llvm.ps1 (MSVC) on Windows — tars each install prefix,
-# and publishes (or extends) a GitHub Release tagged with the LLVM version.
+# on Linux and macOS, scripts/build_llvm.ps1 (MSVC) on Windows — tars each
+# install prefix, and publishes (or extends) a GitHub Release tagged with the
+# LLVM version.
 # Prebuilts are produced once per (LLVM version, triple) and then idle until
 # the next bump.
 
@@ -98,6 +99,77 @@ jobs:
           | Triple | Asset | SHA256 |
           |---|---|---|
           | \`x86_64-unknown-linux-gnu\` | \`${TARBALL}\` | \`${SHA256}\` |
+          EOF
+            gh release create "${LLVM_VERSION}" "${TARBALL}" \
+              --title "LLVM ${LLVM_VERSION}" \
+              --notes-file "${NOTES_FILE}"
+          fi
+
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # macos-14 is Apple Silicon (arm64); cmake/ninja come from Homebrew.
+      # The clang toolchain ships with the runner image (Xcode), which
+      # build_llvm.sh's Darwin branch resolves via `xcrun -f clang`.
+      - name: Install LLVM build tools
+        run: brew install cmake ninja
+
+      # build_llvm.sh uses its own pinned constant; the tar step names the
+      # artifact after the input. Verify they agree up front so a mismatched
+      # dispatch fails in seconds, not after ~30 min of building the wrong
+      # version (mirrors the Linux job's check).
+      - name: Verify llvm_version matches script
+        env:
+          LLVM_VERSION: ${{ inputs.llvm_version }}
+        run: |
+          SCRIPT_VERSION=$(grep '^LLVM_VERSION=' scripts/build_llvm.sh | cut -d= -f2)
+          if [ "${SCRIPT_VERSION}" != "${LLVM_VERSION}" ]; then
+            echo "::error::llvm_version input '${LLVM_VERSION}' does not match scripts/build_llvm.sh pin '${SCRIPT_VERSION}'."
+            echo "Bump scripts/build_llvm.sh first, then dispatch with the matching version."
+            exit 1
+          fi
+
+      - name: Build static LLVM
+        run: scripts/build_llvm.sh
+
+      - name: Tar install prefix
+        id: tar
+        env:
+          LLVM_VERSION: ${{ inputs.llvm_version }}
+        run: |
+          TARBALL="llvm-${LLVM_VERSION}-aarch64-apple-darwin.tar.xz"
+          tar -C "${HOME}/.cache/llvm-static-releases" -cJf "${TARBALL}" "llvm-${LLVM_VERSION}"
+          # Stock macOS ships `shasum`, not `sha256sum` (matches build_llvm.sh).
+          SHA256=$(shasum -a 256 "${TARBALL}" | awk '{print $1}')
+          {
+            echo "tarball=${TARBALL}"
+            echo "sha256=${SHA256}"
+          } >> "${GITHUB_OUTPUT}"
+          ls -lh "${TARBALL}"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          LLVM_VERSION: ${{ inputs.llvm_version }}
+          TARBALL: ${{ steps.tar.outputs.tarball }}
+          SHA256: ${{ steps.tar.outputs.sha256 }}
+        run: |
+          if gh release view "${LLVM_VERSION}" >/dev/null 2>&1; then
+            echo "release ${LLVM_VERSION} already exists; uploading asset"
+            gh release upload "${LLVM_VERSION}" "${TARBALL}" --clobber
+          else
+            NOTES_FILE=$(mktemp)
+            cat > "${NOTES_FILE}" <<EOF
+          Static LLVM ${LLVM_VERSION}, built from llvm-project source with the CMake flag set in \`scripts/build_llvm.sh\`. Minimal: X86 + AArch64 only, no clang / lldb / lld, static archives, assertions off.
+
+          ## Assets
+
+          | Triple | Asset | SHA256 |
+          |---|---|---|
+          | \`aarch64-apple-darwin\` | \`${TARBALL}\` | \`${SHA256}\` |
           EOF
             gh release create "${LLVM_VERSION}" "${TARBALL}" \
               --title "LLVM ${LLVM_VERSION}" \
