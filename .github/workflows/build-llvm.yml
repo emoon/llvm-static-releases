@@ -191,19 +191,9 @@ jobs:
 
       # cmake, ninja, and tar (bsdtar, with xz support) are preinstalled on
       # the windows-latest runner image; cl.exe comes from the step above.
-
-      # build_llvm.ps1 sets -DLLVM_ENABLE_ZLIB=FORCE_ON (1:1 with build_llvm.sh),
-      # which makes CMake fail unless zlib is found. Linux/macOS get zlib from
-      # apt / the system SDK; the Windows runner ships none, so install it via
-      # vcpkg (preinstalled) and hand the script the vcpkg toolchain file +
-      # triplet so find_package(ZLIB) resolves. static-md = static zlib lib
-      # linked against the dynamic UCRT, matching LLVM's default /MD Release CRT.
-      - name: Install zlib (vcpkg)
-        run: |
-          vcpkg install zlib:x64-windows-static-md
-          if ($LASTEXITCODE -ne 0) { throw "vcpkg install zlib failed (exit $LASTEXITCODE)" }
-          "LLVM_BUILD_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "LLVM_BUILD_VCPKG_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
+      # No zlib step: build_llvm.ps1 sets -DLLVM_ENABLE_ZLIB=OFF on Windows
+      # (see the script header for why a portable prebuilt can't carry a
+      # vcpkg ZLIB::ZLIB dependency).
 
       # build_llvm.ps1 uses its own pinned constant; the tar step names the
       # artifact after the input. Verify they agree up front so a mismatched

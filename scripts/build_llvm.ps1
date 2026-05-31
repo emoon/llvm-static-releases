@@ -3,15 +3,24 @@
 # $env:LOCALAPPDATA\llvm-static-releases\llvm-${LLVM_VERSION}\.
 #
 # Windows / MSVC parallel to scripts/build_llvm.sh — the bash script covers
-# Linux and macOS, this covers the x86_64-pc-windows-msvc host. The two must
-# stay in lockstep on the three pinned constants and the CMake flag set:
-# the prebuilt for every triple is meant to be the same minimal static LLVM,
-# differing only in object format.
+# Linux and macOS, this covers the x86_64-pc-windows-msvc host. The two stay
+# in lockstep on the three pinned constants and the CMake flag set, with one
+# deliberate divergence (zlib, below): the prebuilt for every triple is meant
+# to be the same minimal static LLVM, differing only in object format.
 #
 # Minimal here means: X86 + AArch64 only, no clang / lldb / lld, no shared
 # libraries, no LTO/remarks shlibs, assertions off, no zstd / libxml2 /
 # terminfo. Bumping LLVM is a three-constant edit at the top of this file
 # (in lockstep with build_llvm.sh).
+#
+# zlib divergence: build_llvm.sh sets LLVM_ENABLE_ZLIB=FORCE_ON because
+# Linux/macOS have a system zlib that links fine. Windows has no system zlib,
+# so FORCE_ON would either fail to configure or — if satisfied from vcpkg —
+# bake an unsatisfiable `ZLIB::ZLIB` into LLVMSupport's exported link
+# interface, breaking every downstream consumer that doesn't also carry vcpkg
+# zlib. A portable prebuilt must not carry that dependency, so this host sets
+# LLVM_ENABLE_ZLIB=OFF. zlib only gates LLVM's optional debug-info compression;
+# it is not needed for the codegen the prebuilt exists to provide.
 #
 # Toolchain assumption: this script does NOT bootstrap MSVC. The caller is
 # expected to have entered a Developer PowerShell environment first — i.e. run
@@ -99,31 +108,15 @@ Invoke-Native -Exe 'tar' -Arguments @('-xf', $Tarball, '-C', $BuildDir)
 
 New-Item -ItemType Directory -Force -Path $BuildTree | Out-Null
 
-# Optional dependency toolchain. LLVM_ENABLE_ZLIB=FORCE_ON makes CMake fail
-# unless zlib is found; Linux/macOS get zlib from apt / the system SDK, but
-# the Windows runner has none, so the caller installs it via vcpkg and points
-# us at the vcpkg toolchain file (and triplet) through these env vars. This is
-# dependency plumbing only — it does NOT change the LLVM feature flag set,
-# which stays 1:1 with build_llvm.sh.
-$toolchainArgs = @()
-if ($env:LLVM_BUILD_TOOLCHAIN_FILE) {
-    $toolchainArgs += "-DCMAKE_TOOLCHAIN_FILE=$($env:LLVM_BUILD_TOOLCHAIN_FILE)"
-    if ($env:LLVM_BUILD_VCPKG_TRIPLET) {
-        $toolchainArgs += "-DVCPKG_TARGET_TRIPLET=$($env:LLVM_BUILD_VCPKG_TRIPLET)"
-    }
-    Write-Host "using dependency toolchain $($env:LLVM_BUILD_TOOLCHAIN_FILE) (triplet: $($env:LLVM_BUILD_VCPKG_TRIPLET))"
-}
-
 Write-Host 'configuring cmake (Ninja, Release, static)'
-Invoke-Native -Exe 'cmake' -Arguments (@(
+Invoke-Native -Exe 'cmake' -Arguments @(
     '-S', $SrcDir,
     '-B', $BuildTree,
     '-G', 'Ninja',
     '-DCMAKE_BUILD_TYPE=Release',
     "-DCMAKE_INSTALL_PREFIX=$Prefix",
     '-DCMAKE_C_COMPILER=cl',
-    '-DCMAKE_CXX_COMPILER=cl'
-) + $toolchainArgs + @(
+    '-DCMAKE_CXX_COMPILER=cl',
     '-DLLVM_TARGETS_TO_BUILD=X86;AArch64',
     '-DLLVM_ENABLE_PROJECTS=',
     '-DLLVM_INCLUDE_TESTS=OFF',
@@ -139,8 +132,8 @@ Invoke-Native -Exe 'cmake' -Arguments (@(
     '-DLLVM_ENABLE_TERMINFO=OFF',
     '-DLLVM_ENABLE_ZSTD=OFF',
     '-DLLVM_ENABLE_LIBXML2=OFF',
-    '-DLLVM_ENABLE_ZLIB=FORCE_ON'
-))
+    '-DLLVM_ENABLE_ZLIB=OFF'
+)
 
 Write-Host 'building llvm (this is the long step)'
 Invoke-Native -Exe 'cmake' -Arguments @('--build', $BuildTree)
