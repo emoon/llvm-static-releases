@@ -99,15 +99,31 @@ Invoke-Native -Exe 'tar' -Arguments @('-xf', $Tarball, '-C', $BuildDir)
 
 New-Item -ItemType Directory -Force -Path $BuildTree | Out-Null
 
+# Optional dependency toolchain. LLVM_ENABLE_ZLIB=FORCE_ON makes CMake fail
+# unless zlib is found; Linux/macOS get zlib from apt / the system SDK, but
+# the Windows runner has none, so the caller installs it via vcpkg and points
+# us at the vcpkg toolchain file (and triplet) through these env vars. This is
+# dependency plumbing only — it does NOT change the LLVM feature flag set,
+# which stays 1:1 with build_llvm.sh.
+$toolchainArgs = @()
+if ($env:LLVM_BUILD_TOOLCHAIN_FILE) {
+    $toolchainArgs += "-DCMAKE_TOOLCHAIN_FILE=$($env:LLVM_BUILD_TOOLCHAIN_FILE)"
+    if ($env:LLVM_BUILD_VCPKG_TRIPLET) {
+        $toolchainArgs += "-DVCPKG_TARGET_TRIPLET=$($env:LLVM_BUILD_VCPKG_TRIPLET)"
+    }
+    Write-Host "using dependency toolchain $($env:LLVM_BUILD_TOOLCHAIN_FILE) (triplet: $($env:LLVM_BUILD_VCPKG_TRIPLET))"
+}
+
 Write-Host 'configuring cmake (Ninja, Release, static)'
-Invoke-Native -Exe 'cmake' -Arguments @(
+Invoke-Native -Exe 'cmake' -Arguments (@(
     '-S', $SrcDir,
     '-B', $BuildTree,
     '-G', 'Ninja',
     '-DCMAKE_BUILD_TYPE=Release',
     "-DCMAKE_INSTALL_PREFIX=$Prefix",
     '-DCMAKE_C_COMPILER=cl',
-    '-DCMAKE_CXX_COMPILER=cl',
+    '-DCMAKE_CXX_COMPILER=cl'
+) + $toolchainArgs + @(
     '-DLLVM_TARGETS_TO_BUILD=X86;AArch64',
     '-DLLVM_ENABLE_PROJECTS=',
     '-DLLVM_INCLUDE_TESTS=OFF',
@@ -124,7 +140,7 @@ Invoke-Native -Exe 'cmake' -Arguments @(
     '-DLLVM_ENABLE_ZSTD=OFF',
     '-DLLVM_ENABLE_LIBXML2=OFF',
     '-DLLVM_ENABLE_ZLIB=FORCE_ON'
-)
+))
 
 Write-Host 'building llvm (this is the long step)'
 Invoke-Native -Exe 'cmake' -Arguments @('--build', $BuildTree)
