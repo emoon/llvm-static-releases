@@ -1,0 +1,104 @@
+name: build-llvm
+
+# Runs scripts/build_llvm.sh on workflow_dispatch, tars the install prefix,
+# and publishes (or extends) a GitHub Release tagged with the LLVM version.
+# Prebuilts are produced once per (LLVM version, triple) and then idle until
+# the next bump.
+
+on:
+  workflow_dispatch:
+    inputs:
+      llvm_version:
+        description: 'LLVM version to build (e.g. 22.1.5). Becomes the release tag. Must match the pin in scripts/build_llvm.sh.'
+        required: true
+        type: string
+
+# New GitHub repos default GITHUB_TOKEN's contents scope to read-only;
+# creating a Release requires write or the publish step 403s.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Static LLVM peaks at ~10-20 GB during build (scratch removed
+      # afterwards) plus ~3 GB persistent install. Stock ubuntu-latest's
+      # ~14 GB free is not enough; free the pre-installed runtime SDKs to
+      # recover headroom.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Install LLVM build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build zlib1g-dev
+
+      # The llvm_version input is informational/control: scripts/build_llvm.sh
+      # uses its own pinned constant, and the tar step names the artifact
+      # after the input. Verify they agree up front so a mismatched dispatch
+      # fails in seconds, not after ~30 min of building the wrong version.
+      - name: Verify llvm_version matches script
+        env:
+          LLVM_VERSION: ${{ inputs.llvm_version }}
+        run: |
+          SCRIPT_VERSION=$(grep '^LLVM_VERSION=' scripts/build_llvm.sh | cut -d= -f2)
+          if [ "${SCRIPT_VERSION}" != "${LLVM_VERSION}" ]; then
+            echo "::error::llvm_version input '${LLVM_VERSION}' does not match scripts/build_llvm.sh pin '${SCRIPT_VERSION}'."
+            echo "Bump scripts/build_llvm.sh first, then dispatch with the matching version."
+            exit 1
+          fi
+
+      - name: Build static LLVM
+        run: scripts/build_llvm.sh
+
+      - name: Tar install prefix
+        id: tar
+        env:
+          LLVM_VERSION: ${{ inputs.llvm_version }}
+        run: |
+          TARBALL="llvm-${LLVM_VERSION}-x86_64-unknown-linux-gnu.tar.xz"
+          tar -C "${HOME}/.cache/llvm-static-releases" -cJf "${TARBALL}" "llvm-${LLVM_VERSION}"
+          SHA256=$(sha256sum "${TARBALL}" | awk '{print $1}')
+          {
+            echo "tarball=${TARBALL}"
+            echo "sha256=${SHA256}"
+          } >> "${GITHUB_OUTPUT}"
+          ls -lh "${TARBALL}"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          LLVM_VERSION: ${{ inputs.llvm_version }}
+          TARBALL: ${{ steps.tar.outputs.tarball }}
+          SHA256: ${{ steps.tar.outputs.sha256 }}
+        run: |
+          if gh release view "${LLVM_VERSION}" >/dev/null 2>&1; then
+            echo "release ${LLVM_VERSION} already exists; uploading asset"
+            gh release upload "${LLVM_VERSION}" "${TARBALL}" --clobber
+          else
+            NOTES_FILE=$(mktemp)
+            cat > "${NOTES_FILE}" <<EOF
+          Static LLVM ${LLVM_VERSION}, built from llvm-project source with the CMake flag set in \`scripts/build_llvm.sh\`. Minimal: X86 + AArch64 only, no clang / lldb / lld, static archives, assertions off.
+
+          ## Assets
+
+          | Triple | Asset | SHA256 |
+          |---|---|---|
+          | \`x86_64-unknown-linux-gnu\` | \`${TARBALL}\` | \`${SHA256}\` |
+          EOF
+            gh release create "${LLVM_VERSION}" "${TARBALL}" \
+              --title "LLVM ${LLVM_VERSION}" \
+              --notes-file "${NOTES_FILE}"
+          fi
