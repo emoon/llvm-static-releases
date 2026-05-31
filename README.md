@@ -11,7 +11,7 @@ The CMake flag set produces a minimal install:
 - Assertions off, `zstd` / `libxml2` / `terminfo` off, `zlib` on.
 - A belt-and-suspenders post-install sweep removes any `*.so` / `*.dylib` that slipped through.
 
-The full flag list lives in [`scripts/build_llvm.sh`](scripts/build_llvm.sh); that script is the single source of truth for what "minimal static LLVM" means here.
+The full flag list lives in [`scripts/build_llvm.sh`](scripts/build_llvm.sh) (Linux/macOS); that script is the single source of truth for what "minimal static LLVM" means here. [`scripts/build_llvm.ps1`](scripts/build_llvm.ps1) is the Windows/MSVC parallel — same pinned constants and CMake flag set, installing under `%LOCALAPPDATA%\llvm-static-releases\`. The two must be kept in lockstep when bumping LLVM.
 
 ## How to build
 
