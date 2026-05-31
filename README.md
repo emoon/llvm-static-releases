@@ -18,6 +18,7 @@ The full flag list lives in [`scripts/build_llvm.sh`](scripts/build_llvm.sh) (Li
 [`.github/workflows/build-llvm.yml`](.github/workflows/build-llvm.yml) runs on `workflow_dispatch` only. Inputs:
 
 - `llvm_version` — the LLVM version (e.g. `22.1.5`). Becomes the release tag. Must match the `LLVM_VERSION` pin in `scripts/build_llvm.sh` (the workflow verifies this up front and fails fast on mismatch).
+- `os` — which triples to build/publish: `all` (default), `linux`, `macos`, or `windows`. Each asset is published independently, so a re-build overwrites only that triple's asset (with a possibly-different SHA256). Use a single OS to fix or re-cut one triple without disturbing the others' pinned assets.
 
 On dispatch the workflow runs `scripts/build_llvm.sh`, tars the install prefix as `llvm-${llvm_version}-x86_64-unknown-linux-gnu.tar.xz`, and publishes (or extends) the GitHub Release tagged `<llvm_version>`. Each asset's SHA256 is recorded in the release notes so consumers can pin against it.
 

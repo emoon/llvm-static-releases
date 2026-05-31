@@ -14,6 +14,23 @@ on:
         description: 'LLVM version to build (e.g. 22.1.5). Becomes the release tag. Must match the pin in scripts/build_llvm.sh.'
         required: true
         type: string
+      # Each per-OS asset is published independently with `gh release upload
+      # --clobber`. Re-running a job overwrites that triple's asset with a
+      # freshly built one, whose SHA256 may differ (static LLVM builds are not
+      # guaranteed bit-reproducible across runner images) — which would break
+      # any consumer pinning the old SHA. So default to building every triple
+      # on a version bump, but allow targeting a single OS to fix or re-cut one
+      # triple without disturbing the others' pinned assets.
+      os:
+        description: 'Which triples to build/publish.'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - linux
+          - macos
+          - windows
 
 # New GitHub repos default GITHUB_TOKEN's contents scope to read-only;
 # creating a Release requires write or the publish step 403s.
@@ -22,6 +39,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ inputs.os == 'all' || inputs.os == 'linux' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -106,6 +124,7 @@ jobs:
           fi
 
   build-macos:
+    if: ${{ inputs.os == 'all' || inputs.os == 'macos' }}
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -177,6 +196,7 @@ jobs:
           fi
 
   build-windows:
+    if: ${{ inputs.os == 'all' || inputs.os == 'windows' }}
     runs-on: windows-latest
     defaults:
       run:
